@@ -1,0 +1,5 @@
+.env
+config/*.db
+config/*.db-shm
+config/*.db-wal
+config/model_cache/
