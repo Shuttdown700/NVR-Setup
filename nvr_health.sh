@@ -109,6 +109,19 @@ else
     bad "Frigate API not responding on :5000"
 fi
 
+# ---------------------------------------------------------------- 4. REMOTE ACCESS
+echo
+echo "--- 4. REMOTE ACCESS (VNC) ---"
+if systemctl is-enabled --quiet wayvnc 2>/dev/null || pgrep -x wayvnc >/dev/null 2>&1; then
+    if ss -tln 2>/dev/null | grep -q ':5900 '; then
+        ok "wayvnc listening on :5900"
+    else
+        bad "wayvnc enabled but nothing listening on :5900"
+    fi
+else
+    info "wayvnc not enabled (headless/SSH-only setup?)"
+fi
+
 # Recording freshness — is anything actually being written?
 if mountpoint -q "$NVME_MOUNT"; then
     NEWEST=$(find "${FRIGATE_DATA}/recordings" -type f -mmin -15 -print -quit 2>/dev/null)

@@ -33,6 +33,27 @@ Optional: `sudo ./setup.sh --pcie-gen3` to force PCIe gen3 for the NVMe
 (higher throughput; revert if the drive throws I/O errors — some drives are
 unstable at gen3 on the Pi 5).
 
+## Remote desktop (RealVNC Viewer)
+
+Current Raspberry Pi OS no longer ships RealVNC *Server* (the desktop moved to
+Wayland; `vncserver-x11-serviced` is gone). The built-in server is **wayvnc**,
+and RealVNC *Viewer* connects to it fine once two defaults are fixed, which
+`setup.sh` handles automatically:
+
+- Enables RSA-AES auth (generates `/etc/wayvnc/rsa_key.pem`) — wayvnc's default
+  VeNCrypt/TLS scheme is incompatible with RealVNC Viewer.
+- Sets `address=0.0.0.0` — the default `::` listens IPv6-only, which shows up
+  in RealVNC Viewer as "no route to host".
+
+Connect with RealVNC Viewer to `<pi-ip>:5900` and authenticate with the Pi's
+own username/password (PAM). First connection will show an "unsigned identity"
+prompt — expected, accept it.
+
+Requires the **desktop image** (or `rpd-wayland-all` installed); on Lite there
+is no compositor and the script skips VNC with a warning. Headless with no
+monitor attached: wayvnc serves a virtual `NOOP-1` display; set its resolution
+via the desktop's Screen Configuration tool if it comes up tiny.
+
 ## Notes
 
 - The old Hailo/GPU install script has been removed; no accelerator drivers

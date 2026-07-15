@@ -123,7 +123,59 @@ if $PCIE_GEN3 && [[ -f "$BOOT_CONFIG" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 5. Frigate appdata + secrets
+# 5. Remote desktop: wayvnc, configured for RealVNC Viewer compatibility
+#
+# Current Pi OS (Wayland default) no longer ships RealVNC Server; the built-in
+# VNC server is wayvnc. RealVNC *Viewer* still works against it, but only with
+# RSA-AES auth enabled (wayvnc >= 0.7) and an IPv4 listen address — the
+# defaults (VeNCrypt/TLS, address=::) are incompatible / IPv6-only.
+# -----------------------------------------------------------------------------
+WAYVNC_CONF="/etc/wayvnc/config"
+
+set_wayvnc_opt() {  # set_wayvnc_opt key value — idempotent key=value editor
+    local key="$1" val="$2"
+    if grep -q "^#\?${key}=" "$WAYVNC_CONF" 2>/dev/null; then
+        sed -i "s|^#\?${key}=.*|${key}=${val}|" "$WAYVNC_CONF"
+    else
+        echo "${key}=${val}" >> "$WAYVNC_CONF"
+    fi
+}
+
+if [[ -f /boot/firmware/config.txt ]] && systemctl list-unit-files --type=target 2>/dev/null | grep -q graphical.target; then
+    if command -v raspi-config >/dev/null 2>&1; then
+        log "Enabling VNC via raspi-config (wayvnc)..."
+        raspi-config nonint do_vnc 0 || warn "raspi-config do_vnc failed — is a desktop session installed? (Lite images have no compositor for wayvnc)"
+    fi
+
+    if command -v wayvnc >/dev/null 2>&1 && [[ -d /etc/wayvnc || -f "$WAYVNC_CONF" ]]; then
+        mkdir -p /etc/wayvnc
+        [[ -f "$WAYVNC_CONF" ]] && cp "$WAYVNC_CONF" "${WAYVNC_CONF}.bak.$(date +%s)" || touch "$WAYVNC_CONF"
+
+        # RSA key for RSA-AES auth (the scheme RealVNC Viewer supports)
+        if [[ ! -f /etc/wayvnc/rsa_key.pem ]]; then
+            log "Generating wayvnc RSA key for RealVNC Viewer auth..."
+            ssh-keygen -m pem -f /etc/wayvnc/rsa_key.pem -t rsa -N "" -q
+        fi
+
+        set_wayvnc_opt use_relative_paths true
+        set_wayvnc_opt enable_auth true
+        set_wayvnc_opt enable_pam true              # log in with the Pi's own user/password
+        set_wayvnc_opt rsa_private_key_file rsa_key.pem
+        set_wayvnc_opt address 0.0.0.0              # default '::' is IPv6-only; RealVNC Viewer can't reach it
+        set_wayvnc_opt port 5900
+
+        systemctl enable wayvnc 2>/dev/null || true
+        systemctl restart wayvnc 2>/dev/null || warn "Couldn't restart wayvnc service — it may start with the desktop session instead"
+        log "VNC ready: connect RealVNC Viewer to $(hostname -I | awk '{print $1}'):5900 (Pi username/password)"
+    else
+        warn "wayvnc not present — VNC skipped. Install the desktop ('sudo apt install rpd-wayland-all' or reflash with the desktop image) and re-run."
+    fi
+else
+    warn "No graphical target detected (Lite image?) — VNC setup skipped."
+fi
+
+# -----------------------------------------------------------------------------
+# 6. Frigate appdata + secrets
 # -----------------------------------------------------------------------------
 CONFIG_DIR="${REPO_DIR}/config"
 mkdir -p "$CONFIG_DIR"
@@ -147,7 +199,7 @@ if [[ ! -f "${REPO_DIR}/.env" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 6. Launch the stack
+# 7. Launch the stack
 # -----------------------------------------------------------------------------
 log "Starting containers..."
 cd "$REPO_DIR"
