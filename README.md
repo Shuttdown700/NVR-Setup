@@ -21,7 +21,9 @@ config/             # Frigate appdata (config.yml + its SQLite DB live here)
    `git clone <repo> && cd nvr-repo`
 3. `cp .env.example .env` and fill in the RTSP password and Cloudflare tunnel
    token, then `chmod 600 .env`.
-4. Restore `config/config.yml` from backup if not tracked in the repo.
+4. Nothing to restore for camera config — `setup.sh` seeds `config/config.yml`
+   from the tracked `config.yml.example`. (The SQLite DB / past event metadata
+   in `config/` is lost with the SD card, but recordings on NVMe survive.)
 5. `sudo ./setup.sh`
    - Installs Docker + tooling
    - Finds the existing ext4 partition on the NVMe and mounts it at
@@ -56,9 +58,17 @@ via the desktop's Screen Configuration tool if it comes up tiny.
 
 ## Notes
 
+- `config.yml.example` is the tracked, sanitized camera config. `setup.sh`
+  seeds `config/config.yml` from it on first run (never overwrites an
+  existing one). RTSP creds are injected at runtime via Frigate's
+  `{FRIGATE_RTSP_PASSWORD}` env substitution — safe to commit.
 - The old Hailo/GPU install script has been removed; no accelerator drivers
-  are needed. Frigate should be configured with a CPU detector in
-  `config/config.yml` (`detectors: { cpu1: { type: cpu } }`).
+  are needed. The config uses a CPU detector.
+- `ffmpeg.hwaccel_args: preset-rpi-64-h264` was removed from the config: it
+  targets the Pi 4's V4L2 decoder, which doesn't exist on the Pi 5 (no H.264
+  hardware decode block). H.264 decode is CPU-only on this box. If the
+  cameras are ever switched to H.265, use `preset-rpi-64-h265` — the Pi 5
+  does have an HEVC decoder, and `/dev/dri` is already mapped for it.
 - `privileged: true` and the `/dev/video11` mapping were dropped from the
   compose file: the Pi 5 has no H.264 hardware decode block (`/dev/video11`
   is a Pi 4 artifact), and nothing in this stack needs privileged mode.
