@@ -109,9 +109,130 @@ else
     bad "Frigate API not responding on :5000"
 fi
 
-# ---------------------------------------------------------------- 4. REMOTE ACCESS
+# ---------------------------------------------------------------- 4. UPS / NUT
+#
+# This Pi is a NUT *secondary*: the UPS is on the primary (the NAS) and we
+# learn about outages over the LAN. Two independent things can break, and
+# neither announces itself — the whole point of checking here:
+#   (a) the link to the primary (upsmon dead, bad creds, router/LAN down)
+#   (b) the local shutdown path (SHUTDOWNCMD missing/non-executable)
+# upsmon does NOT validate SHUTDOWNCMD at startup, so a missing script looks
+# perfectly healthy right up until the one moment it matters.
 echo
-echo "--- 4. REMOTE ACCESS (VNC) ---"
+echo "--- 4. UPS / NUT ---"
+
+UPS_SHUTDOWN_SCRIPT="/usr/local/sbin/ups-shutdown-pi.sh"
+
+# Resolve the UPS identity from upsmon.conf so this stays in sync with setup.sh
+UPS_TARGET=""
+if [[ -r /etc/nut/upsmon.conf ]]; then
+    UPS_TARGET=$(awk '/^[[:space:]]*MONITOR[[:space:]]/{print $2; exit}' /etc/nut/upsmon.conf 2>/dev/null)
+elif sudo -n true 2>/dev/null; then
+    UPS_TARGET=$(sudo awk '/^[[:space:]]*MONITOR[[:space:]]/{print $2; exit}' /etc/nut/upsmon.conf 2>/dev/null)
+fi
+
+if [[ -z "$UPS_TARGET" ]] && ! command -v upsc >/dev/null 2>&1; then
+    info "NUT not configured on this host — UPS checks skipped"
+else
+    # --- 4a. upsmon service ---
+    if systemctl is-active --quiet nut-monitor; then
+        ok "nut-monitor running"
+    else
+        bad "nut-monitor NOT running — this Pi will hard-cut on a power failure"
+    fi
+
+    # --- 4b. shutdown path ---
+    if [[ -x "$UPS_SHUTDOWN_SCRIPT" ]]; then
+        ok "Shutdown script present and executable"
+    elif [[ -e "$UPS_SHUTDOWN_SCRIPT" ]]; then
+        bad "$UPS_SHUTDOWN_SCRIPT exists but is NOT executable — shutdown would fail"
+    else
+        bad "$UPS_SHUTDOWN_SCRIPT MISSING — upsmon has nothing to run on FSD"
+    fi
+
+    # /run/nut must exist or upsmon can't write its PID file, which silently
+    # breaks 'upsmon -c fsd' and 'upsmon -c reload'. Pi OS omits the tmpfiles
+    # snippet that creates it.
+    if [[ -d /run/nut ]]; then
+        ok "/run/nut present"
+    else
+        bad "/run/nut missing — 'upsmon -c fsd' and reload will fail"
+    fi
+
+    # --- 4c. link to the primary + battery state ---
+    if [[ -z "$UPS_TARGET" ]]; then
+        bad "No MONITOR line found in /etc/nut/upsmon.conf"
+    else
+        info "Monitoring: $UPS_TARGET"
+        UPSDATA=$(upsc "$UPS_TARGET" 2>/dev/null)
+        if [[ -z "$UPSDATA" ]]; then
+            bad "Cannot reach $UPS_TARGET — primary down, LAN down, or bad credentials"
+        else
+            ok "Reached NUT primary"
+
+            ups_var() { echo "$UPSDATA" | awk -F': ' -v k="$1" '$1==k{print $2; exit}'; }
+
+            STATUS=$(ups_var ups.status)
+            CHARGE=$(ups_var battery.charge)
+            RUNTIME=$(ups_var battery.runtime)
+            LOAD=$(ups_var ups.load)
+            INV=$(ups_var input.voltage)
+            BATTV=$(ups_var battery.voltage)
+
+            [[ -n "$RUNTIME" ]] && RUNMIN=$((RUNTIME / 60)) || RUNMIN="?"
+            info "Load: ${LOAD:-?}% | input: ${INV:-?}V | battery: ${BATTV:-?}V | runtime: ${RUNMIN} min"
+
+            # Status is a space-separated flag list: OL, OB, LB, RB, CHRG, etc.
+            case " $STATUS " in
+                *" OB "*)
+                    bad "UPS ON BATTERY (${STATUS}) — mains lost, ${RUNMIN} min remaining" ;;
+                *" OL "*)
+                    ok "UPS on line power (${STATUS})" ;;
+                "  "|"")
+                    bad "UPS status unavailable" ;;
+                *)
+                    bad "UPS in unexpected state: ${STATUS}" ;;
+            esac
+
+            # Explicit flags worth surfacing regardless of OL/OB
+            [[ " $STATUS " == *" LB "* ]] && bad "LOW BATTERY flag set — shutdown imminent"
+            [[ " $STATUS " == *" RB "* ]] && bad "REPLACE BATTERY flag set — pack is failing"
+            [[ " $STATUS " == *" OVER "* ]] && bad "UPS OVERLOADED — reduce connected load"
+            [[ " $STATUS " == *" ALARM "* ]] && bad "UPS alarm condition present"
+
+            if [[ -n "$CHARGE" ]]; then
+                if [[ "$CHARGE" -ge 90 ]]; then
+                    ok "Battery charge: ${CHARGE}%"
+                elif [[ "$CHARGE" -ge 50 ]]; then
+                    info "Battery charge: ${CHARGE}% (recharging?)"
+                else
+                    bad "Battery charge low: ${CHARGE}%"
+                fi
+            fi
+
+            # Runtime is the number that actually matters for a clean teardown.
+            # Compare against the primary's own low-runtime threshold if exposed.
+            RTLOW=$(ups_var battery.runtime.low)
+            if [[ -n "$RUNTIME" && -n "$RTLOW" ]] && [[ "$RUNTIME" -lt "$RTLOW" ]]; then
+                bad "Runtime ${RUNMIN} min is below the configured low threshold ($((RTLOW / 60)) min)"
+            fi
+        fi
+    fi
+
+    # --- 4d. last shutdown event ---
+    # A stale killpower flag means a previous shutdown didn't complete cleanly.
+    if [[ -f /etc/killpower ]]; then
+        bad "/etc/killpower present — leftover from an incomplete UPS shutdown"
+    fi
+    if [[ -r /var/log/ups-shutdown.log ]]; then
+        LASTUPS=$(grep -a '^=== ' /var/log/ups-shutdown.log 2>/dev/null | tail -1)
+        [[ -n "$LASTUPS" ]] && info "Last shutdown log entry: ${LASTUPS}"
+    fi
+fi
+
+# ---------------------------------------------------------------- 5. REMOTE ACCESS
+echo
+echo "--- 5. REMOTE ACCESS (VNC) ---"
 if systemctl is-enabled --quiet wayvnc 2>/dev/null || pgrep -x wayvnc >/dev/null 2>&1; then
     if ss -tln 2>/dev/null | grep -q ':5900 '; then
         ok "wayvnc listening on :5900"

@@ -1,5 +1,8 @@
 .env
+.pem
 config/*.db
 config/*.db-shm
 config/*.db-wal
 config/model_cache/
+config/*.yaml
+config/*.yml
